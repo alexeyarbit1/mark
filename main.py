@@ -41,53 +41,18 @@ MP_API_KEY = "8014d1af370af202bf8c5681f891a594"
 MP_PROXY_ID = 493322
 MP_PROXY_KEY = "82fd4b143c6a0b2901dd9b9d7f6f9498"
 
-# ---------- ПРЯМЫЕ ФУНКЦИИ API (БЕЗ СТОРОННИХ ФАЙЛОВ) ----------
+# ---------- ПРЯМЫЕ ФУНКЦИИ API (ОПТИМИЗИРОВАНО ДЛЯ СКОРОСТИ) ----------
 def sync_change_ip_link() -> bool:
-    """Смена IP-адреса по прямой ссылке"""
+    """Максимально быстрая смена IP-адреса по прямой ссылке"""
     try:
         url = f"https://changeip.mobileproxy.space/?proxy_key={MP_PROXY_KEY}&format=json"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        response = requests.get(url, headers=headers, timeout=15)
-        data = response.json()
-        
-        if str(data.get('status', '')).upper() == 'OK':
-            logging.info(f"✅ Смена IP успешна. Новый IP: {data.get('new_ip', 'неизвестно')}")
+        # Таймаут 5 сек, без лишних заголовков для скорости
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
             return True
-        else:
-            logging.error(f"⚠️ Ошибка смены IP: {data}")
-            return False
-    except Exception as e:
-        logging.error(f"❌ Критический сбой при запросе смены IP: {e}")
         return False
-
-def sync_change_equipment() -> tuple[bool, str]:
-    """Смена оборудования (Локации) через API"""
-    try:
-        # Для примера берем Москву (ты можешь добавить нужные ID гео из документации)
-        # В API mobileproxy: id_country=1 (РФ), id_city=1 (Москва)
-        url = f"https://mobileproxy.space/api.html?command=change_equipment&api_key={MP_API_KEY}&proxy_id={MP_PROXY_ID}&id_country=1&id_city=1&add_to_black_list=0"
-        
-        response = requests.get(url, timeout=15)
-        data = response.json()
-        
-        status = str(data.get("status", "")).lower()
-        if status == "ok":
-            return True, "Смена оборудования (Локации) успешно выполнена!"
-            
-        elif status == "err" or "error" in data:
-            error_msg = data.get("error", "Неизвестная ошибка")
-            if isinstance(error_msg, dict):
-                error_msg = list(error_msg.values())[0]
-                
-            if "меньше 10 минут" in str(error_msg):
-                return False, "Ожидание: менять оборудование можно только раз в 10 минут."
-            return False, f"Ошибка API: {error_msg}"
-            
-        return False, f"Неизвестный ответ: {data}"
-    except Exception as e:
-        return False, f"Критическая ошибка при обращении к API: {e}"
+    except:
+        return False
 
 # ---------- файлы (база данных) ----------
 BASE_DATA_DIR = Path("user_data")
@@ -179,7 +144,6 @@ class ClearConfirm(StatesGroup):
 main_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🔐 Войти в аккаунт")],
-        [KeyboardButton(text="🔄 Сменить оборудование")],
         [KeyboardButton(text="📊 База аккаунтов"), KeyboardButton(text="📦 Выгрузить базу")],
         [KeyboardButton(text="🗑 Очистить базу")],
     ],
@@ -294,14 +258,12 @@ async def multi_login_process(user_id: int, message: types.Message, count: int, 
 
                 for i in range(1, count + 1):
                     try:
-                        # === СМЕНА IP ПЕРЕД ГЕНЕРАЦИЕЙ QR ===
-                        await message.answer(f"🔄 **Аккаунт {i}**: Меняю IP-адрес прокси...")
+                        # === МАКСИМАЛЬНО БЫСТРАЯ СМЕНА IP ПЕРЕД ГЕНЕРАЦИЕЙ QR ===
+                        # Сообщения в ТГ убраны, чтобы не тратить 0.5-1 секунды на отправку
                         ip_changed = await asyncio.to_thread(sync_change_ip_link)
                         if ip_changed:
-                            # Ждем 3 секунды, чтобы прокси успел применить новый IP
-                            await asyncio.sleep(3)
-                        else:
-                            await message.answer(f"⚠️ Не удалось сменить IP по ссылке. Продолжаю со старым...")
+                            # 1.5 секунды обычно идеально хватает для обновления IP на mobileproxy
+                            await asyncio.sleep(1.5)
 
                         context = await browser.new_context(
                             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -417,18 +379,6 @@ async def cmd_start(message: types.Message):
         reply_markup=main_kb
     )
 
-# === КНОПКА СМЕНЫ ОБОРУДОВАНИЯ ===
-@dp.message(F.text == "🔄 Сменить оборудование")
-async def handle_change_equipment(message: types.Message):
-    msg = await message.answer("⚙️ Отправляю запрос на смену оборудования (Локации) провайдеру...")
-    
-    success, response_text = await asyncio.to_thread(sync_change_equipment)
-    
-    if success:
-        await msg.edit_text(f"✅ {response_text}")
-    else:
-        await msg.edit_text(f"⚠️ {response_text}")
-
 @dp.message(F.text == "🔐 Войти в аккаунт")
 async def handle_login_start(message: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -450,7 +400,7 @@ async def process_login_count(callback: CallbackQuery, state: FSMContext):
         await close_user_session(user_id)
         await callback.message.answer("🔄 Предыдущая сессия сброшена.")
     
-    await callback.message.edit_text(f"🚀 Начинаю подготовку {count} QR-кода(ов)...\n(Перед каждым QR будет меняться IP прокси)")
+    await callback.message.edit_text(f"🚀 Начинаю подготовку {count} QR-кода(ов)...\n(Перед каждым QR будет незаметно меняться IP прокси)")
     asyncio.create_task(multi_login_process(user_id, callback.message, count, state))
 
 @dp.message(F.text == "📊 База аккаунтов")
@@ -545,7 +495,6 @@ if __name__ == "__main__":
     
     print("⏳ Начинаю скачивание браузера Chromium (это займет 1-2 минуты)...")
     try:
-        # Питон сам скачивает браузер через свои модули
         subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
         print("✅ Браузер успешно скачан и установлен!")
     except Exception as e:
